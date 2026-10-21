@@ -12,7 +12,7 @@ import sys
 from tkinter import filedialog
 
 from readers import wait_for_tag
-from store import (HERE, add_cube, epc_index, image_pairs, next_cube_name,
+from store import (DATA_DIR, add_cube, epc_index, image_pairs, next_cube_name,
                    resolve_path, save_config, save_tags)
 
 ROLES = ("D", "U")
@@ -182,7 +182,7 @@ def _choose_media(root, data):
         print(f"Choose the {ROLE_NAMES[role]} image in the file dialog...")
         path = filedialog.askopenfilename(
             parent=root, title=f"Choose the {ROLE_NAMES[role]} image",
-            initialdir=str(HERE), filetypes=IMAGE_TYPES)
+            initialdir=str(DATA_DIR), filetypes=IMAGE_TYPES)
         if not path:
             return None
         print(f"  {role}: {path}")
@@ -191,7 +191,7 @@ def _choose_media(root, data):
     print("Choose a sound (mp3) for this cube, or Cancel for none...")
     sound = filedialog.askopenfilename(
         parent=root, title="Choose the cube's sound (Cancel = no sound)",
-        initialdir=str(HERE), filetypes=SOUND_TYPES)
+        initialdir=str(DATA_DIR), filetypes=SOUND_TYPES)
     print(f"  sound: {sound or '(none)'}")
     return paths[0], paths[1], sound or None
 

@@ -29,6 +29,8 @@ pip install pyserial pillow pygame
 python app.py [--min-rssi 200] [--power 15] [--show-seconds 10]
 ```
 
+Media (images, mp3s, `bg.jpg`) lives in `data/` (`store.DATA_DIR`); paths in `tags.json` are bare filenames relative to `data/` (e.g. `tomatD.jpg`); files outside `data/` are stored absolute.
+
 Two readers: the **D** reader (de'a, opinion) and the **U** reader (uvda, fact). Each exhibit cube has a tag on all 6 faces; placing it on a reader shows that cube's `imgD` / `imgU` full-screen for 10 s, then back to `bg.jpg`. A tag left on the reader triggers once (it must be away `REARM_SECONDS` to re-trigger). While a cube is showing, reads of any of its tags (any face) from the same reader are ignored until it returns to bg; the same cube on the other reader, or another cube, interrupts. On the window, `new<Enter>` registers cubes in the terminal; Esc quits. If only one reader is connected, startup offers toggle mode (role `TOGGLE`, not saved to config): that reader alternates imgU, imgD, imgU, … on each fresh read.
 
 - `readers.py` — finds ports by USB VID (CH340 0x1A86, Arduino 0x2341/0x2A03), one `Reader` thread per port, all pushing `(reader_id, rssi, epc)` into one shared queue. Reader ids are `sn:<usb serial>` → `loc:<usb location>` → `port:<COMx>`, because both M100s return the same GET_INFO string; moving a reader to another USB socket may change its id and force role re-assignment. Reuses `uhf_filter.py`'s frame helpers.

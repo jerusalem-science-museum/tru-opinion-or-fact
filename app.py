@@ -36,7 +36,7 @@ import registration
 import store
 from readers import open_readers
 
-BG_IMAGE = store.HERE / "bg.jpg"
+BG_IMAGE = store.DATA_DIR / "bg.jpg"
 REARM_SECONDS = 2  # a tag must be away from a reader this long before it triggers again
 TOGGLE = "toggle"  # role of a lone reader that alternates U, D, U, ...
 

@@ -1,11 +1,12 @@
 """Persistence for registered cubes (tags.json) and reader roles (config.json).
 
 tags.json -- one entry per physical cube; all its EPCs share one image pair:
-    {"cubes": [{"name": "tomato cube 1", "imgD": "images/tomatD.jpg",
-                "imgU": "images/tomatU.jpg", "epcs": ["E200...", ...]}]}
+    {"cubes": [{"name": "tomato cube 1", "imgD": "tomatD.jpg",
+                "imgU": "tomatU.jpg", "epcs": ["E200...", ...]}]}
   A lost cube is replaced by registering a new entry (it may reuse the same
-  image paths).  Image paths inside the project folder are stored relative to
-  it with forward slashes; anything else is stored absolute.
+  image paths).  Media paths are stored relative to the data/ folder
+  (DATA_DIR) with forward slashes when they are inside it; anything else is
+  stored absolute.
 
 config.json -- {"readers": {"<reader_id>": "D" | "U"}}; other top-level keys
   are kept as-is.
@@ -24,6 +25,7 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+DATA_DIR = HERE / "data"  # images and sounds; also the default folder for file dialogs
 TAGS_FILE = HERE / "tags.json"
 CONFIG_FILE = HERE / "config.json"
 
@@ -74,17 +76,17 @@ def _save_json(path, data):
 # ---------- paths ----------
 
 def to_stored_path(path) -> str:
-    """Relative (forward slashes) if inside HERE, else absolute."""
+    """Relative to DATA_DIR (forward slashes) if inside it, else absolute."""
     p = Path(path).expanduser().resolve()
     try:
-        return p.relative_to(HERE.resolve()).as_posix()
+        return p.relative_to(DATA_DIR.resolve()).as_posix()
     except ValueError:      # outside the project, incl. another drive letter
         return str(p)
 
 
 def resolve_path(stored) -> Path:
     p = Path(stored)
-    return p if p.is_absolute() else HERE / p
+    return p if p.is_absolute() else DATA_DIR / p
 
 
 # ---------- tags ----------
