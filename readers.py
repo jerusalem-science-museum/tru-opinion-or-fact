@@ -39,19 +39,19 @@ import time
 import serial
 import serial.tools.list_ports
 
-from uhf_filter import (BAUD, CMD_GET_INFO, CMD_MULTI_POLL, CMD_STOP_POLL,
-                        build_cmd, checksum_ok, cmd_set_power, parse_tag,
-                        read_frame)
+from uhf_filter import (BAUD, CMD_GET_INFO, build_cmd, checksum_ok,
+                        cmd_set_power, parse_tag, read_frame)
 
 VID_CH340 = 0x1A86
 VID_ARDUINO = (0x2341, 0x2A03)
 LEONARDO_PIDS = (0x8036, 0x0036)
 
 CMD_GET_SW_VERSION = build_cmd(0x03, b"\x01")
+CMD_SINGLE_POLL = build_cmd(0x22)
 
 GET_INFO_ATTEMPTS = 5      # Leonardos may reset when the port opens
 GET_INFO_RETRY_WAIT = 0.6  # seconds between attempts (~3 s total)
-QUIET_RESTART = 2          # re-issue multi-poll after this many quiet seconds
+POLL_INTERVAL = 0.05       # seconds between single polls
 
 
 class ReaderError(Exception):
@@ -150,31 +150,24 @@ class Reader(threading.Thread):
         ser = self.ser
         try:
             ser.reset_input_buffer()
-            ser.write(CMD_MULTI_POLL)
-            last_rx = time.time()
             while not self._stop_event.is_set():
+                # One inventory round: reply is a tag frame per tag seen, or a
+                # 0x01/0xFF error frame meaning "no tag in range".
+                ser.write(CMD_SINGLE_POLL)
                 frame = read_frame(ser)
-                if frame is None:
-                    if time.time() - last_rx > QUIET_RESTART:
-                        ser.write(CMD_MULTI_POLL)
-                        last_rx = time.time()
-                    continue
-                if not checksum_ok(frame):
-                    continue
-                last_rx = time.time()
-                tag = parse_tag(frame)
-                if not tag:
-                    continue
-                rssi, epc = tag
-                if rssi >= self.min_rssi:
-                    self.out_queue.put((self.id, rssi, epc))
+                while frame is not None:
+                    if checksum_ok(frame):
+                        tag = parse_tag(frame)
+                        if tag:
+                            rssi, epc = tag
+                            if rssi >= self.min_rssi:
+                                self.out_queue.put((self.id, rssi, epc))
+                    # several tags in range -> several frames; drain what's already arrived
+                    frame = read_frame(ser) if ser.in_waiting else None
+                time.sleep(POLL_INTERVAL)
         except (serial.SerialException, OSError) as e:
             print(f"Reader {self.id} ({self.port}) stopped: {e}")
         finally:
-            try:
-                ser.write(CMD_STOP_POLL)
-            except Exception:
-                pass
             try:
                 ser.close()
             except Exception:
