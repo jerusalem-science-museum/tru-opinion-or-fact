@@ -39,15 +39,14 @@ import time
 import serial
 import serial.tools.list_ports
 
-from uhf_filter import (BAUD, CMD_GET_INFO, build_cmd, checksum_ok,
-                        cmd_set_power, parse_tag, read_frame)
+from m100 import (BAUD, CMD_GET_INFO, CMD_SINGLE_POLL, build_cmd,
+                  checksum_ok, cmd_set_power, parse_tag, read_frame)
 
 VID_CH340 = 0x1A86
 VID_ARDUINO = (0x2341, 0x2A03)
 LEONARDO_PIDS = (0x8036, 0x0036)
 
 CMD_GET_SW_VERSION = build_cmd(0x03, b"\x01")
-CMD_SINGLE_POLL = build_cmd(0x22)
 
 GET_INFO_ATTEMPTS = 5      # Leonardos may reset when the port opens
 GET_INFO_RETRY_WAIT = 0.6  # seconds between attempts (~3 s total)
