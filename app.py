@@ -182,6 +182,9 @@ def main():
     except store.StoreError as e:
         sys.exit(str(e))
 
+    power = "reader default" if args.power is None else f"{args.power} dBm"
+    print(f"Settings: min-rssi={args.min_rssi}, power={power}, show-seconds={args.show_seconds}")
+
     q = queue.Queue()
     readers = open_readers(q, args.min_rssi, args.power)
     for r in readers:
