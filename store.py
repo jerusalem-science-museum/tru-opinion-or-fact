@@ -4,11 +4,13 @@ tags.json -- one entry per physical cube; all its EPCs share one image pair:
     {"cubes": [{"name": "tomato cube 1", "imgD": "tomatD.jpg",
                 "imgU": "tomatU.jpg", "epcs": ["E200...", ...]}]}
   A lost cube is replaced by registering a new entry (it may reuse the same
-  image paths).  Media paths are stored relative to the data/ folder
+  image paths).  A top-level "bg" names the idle background image
+  (required by app.py, no default).  Media paths are stored relative to the data/ folder
   (DATA_DIR) with forward slashes when they are inside it; anything else is
   stored absolute.
 
-config.json -- {"readers": {"<reader_id>": "D" | "U"}}; other top-level keys
+config.json -- {"readers": {"<reader_id>": "D" | "U"}, optional "min_rssi",
+"power", "show_seconds" run defaults (CLI flags override)}; other top-level keys
   are kept as-is.
 
 A corrupt (unparsable or wrongly shaped) JSON file raises StoreError naming

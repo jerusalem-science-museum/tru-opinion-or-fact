@@ -171,7 +171,7 @@ class App:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--min-rssi", type=int, default=0, help="only react to tags with RSSI >= this")
+    ap.add_argument("--min-rssi", type=int, default=200, help="only react to tags with RSSI >= this")
     ap.add_argument("--power", type=float, help="set TX power in dBm (lower = shorter range)")
     ap.add_argument("--show-seconds", type=float, default=2, help="how long to show imgD/imgU")
     args = ap.parse_args()
