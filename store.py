@@ -10,7 +10,9 @@ tags.json -- one entry per physical cube; all its EPCs share one image pair:
   stored absolute.
 
 config.json -- {"readers": {"<reader_id>": "D" | "U"}, optional "min_rssi",
-"power", "show_seconds" run defaults (CLI flags override)}; other top-level keys
+"power", "show_seconds" run defaults (CLI flags override), optional
+"single_reader": "alternate" (default; a lone reader alternates U, D, U, ...)
+or "assign" (a lone reader gets a D/U role like any other)}; other top-level keys
   are kept as-is.
 
 A corrupt (unparsable or wrongly shaped) JSON file raises StoreError naming

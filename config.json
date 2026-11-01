@@ -1,5 +1,6 @@
 {
   "readers": {
     "loc:1-2": "D"
-  }
+  },
+  "single_reader": "alternate"
 }

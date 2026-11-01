@@ -193,9 +193,10 @@ def main():
     root = tk.Tk()
     root.withdraw()
     try:
-        if len(readers) == 1 and input(
-                "Only one reader connected. Alternate U/D on it (U, D, U, ...)? [Y/n]: "
-        ).strip().lower() in ("", "y", "yes"):
+        single = cfg.get("single_reader", "alternate")
+        if len(readers) == 1:
+            print(f"Only one reader connected: single_reader = {single!r} (from config.json)")
+        if len(readers) == 1 and single == "alternate":
             roles = {readers[0].id: TOGGLE}
         else:
             roles = registration.assign_reader_roles(readers, cfg, q)
