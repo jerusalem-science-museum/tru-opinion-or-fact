@@ -36,7 +36,7 @@ import registration
 import store
 from readers import open_readers
 
-BG_IMAGE = store.DATA_DIR / "bg.jpg"
+
 REARM_SECONDS = 2  # a tag must be away from a reader this long before it triggers again
 TOGGLE = "toggle"  # role of a lone reader that alternates U, D, U, ...
 
@@ -97,7 +97,8 @@ class App:
             self.root.after_cancel(self.pending)
             self.pending = None
         self.current = None
-        self.show(BG_IMAGE)
+        # no error handling: a bad "bg" in tags.json should crash, not fall back
+        self.label.configure(image=self.photo(store.resolve_path(self.tags["bg"])))
 
     # --- tags ---
 

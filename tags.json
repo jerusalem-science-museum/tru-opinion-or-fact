@@ -1,4 +1,5 @@
 {
+  "bg": "bg.png",
   "cubes": [
     {
       "name": "tomat",
