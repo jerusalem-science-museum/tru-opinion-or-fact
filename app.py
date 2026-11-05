@@ -14,12 +14,15 @@ Usage:
     python app.py [--min-rssi 200] [--power 15] [--show-seconds 10]
 """
 import argparse
+import logging
 import os
 import queue
 import sys
 import time
 import tkinter as tk
 import warnings
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from PIL import Image, ImageTk
 
@@ -28,13 +31,27 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 try:
     import pygame.mixer as mixer
     mixer.init()
+    mixer_error = None
 except Exception as e:  # no pygame / no audio device: run silently
-    print(f"WARNING: sound disabled ({e})")
-    mixer = None
+    mixer, mixer_error = None, e
 
 import registration
 import store
 from readers import open_readers
+
+log = logging.getLogger("app")
+
+LOG_FILE = Path(__file__).resolve().parent / "logs" / "app.log"
+
+
+def setup_logging():
+    """Log to the terminal and to logs/app.log (rotated: 5 x 1 MB kept)."""
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    to_file = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=5, encoding="utf-8")
+    to_file.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(threadName)s: %(message)s"))
+    to_term = logging.StreamHandler()
+    to_term.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
+    logging.basicConfig(level=logging.INFO, handlers=[to_file, to_term])
 
 
 REARM_SECONDS = 2  # a tag must be away from a reader this long before it triggers again
@@ -56,6 +73,7 @@ class App:
         self.pending = None           # id of the scheduled return to bg
         self.current = None           # (reader_id, cube) showing now; that cube on that reader is ignored meanwhile
 
+        root.report_callback_exception = lambda *exc: log.error("Error in Tk callback", exc_info=exc)
         root.title("Opinion or Fact")
         root.configure(bg="black")
         self.label = tk.Label(root, bg="black")
@@ -89,7 +107,7 @@ class App:
             self.label.configure(image=self.photo(path))
             return True
         except OSError as e:
-            print(f"Can't show {path}: {e}")
+            log.error("Can't show %s: %s", path, e)
             return False
 
     def show_bg(self):
@@ -103,6 +121,14 @@ class App:
     # --- tags ---
 
     def poll_tags(self):
+        try:
+            self.handle_reads()
+        except Exception:
+            log.exception("Error handling tag reads")
+        finally:  # always reschedule, or the exhibit stops reacting until restart
+            self.root.after(50, self.poll_tags)
+
+    def handle_reads(self):
         now = time.time()
         while True:
             try:
@@ -120,7 +146,6 @@ class App:
             showing = self.current and self.current[0] == reader_id and self.current[1] is cube
             if role and cube and fresh and not showing:
                 self.trigger(reader_id, cube, role)
-        self.root.after(50, self.poll_tags)
 
     def trigger(self, reader_id, cube, role):
         toggle = role == TOGGLE
@@ -133,6 +158,7 @@ class App:
                 self.root.after_cancel(self.pending)
             self.pending = self.root.after(self.show_ms, self.show_bg)
             self.current = (reader_id, cube)
+            log.info("Show %s %s (reader %s)", cube.get("name", "?"), role, reader_id)
             if cube.get("sound"):
                 self.play(store.resolve_path(cube["sound"]))
 
@@ -144,7 +170,7 @@ class App:
             mixer.music.load(str(path))
             mixer.music.play()
         except Exception as e:
-            print(f"Can't play {path}: {e}")
+            log.error("Can't play %s: %s", path, e)
 
     # --- keyboard: "new<Enter>" ---
 
@@ -176,14 +202,20 @@ def main():
     ap.add_argument("--show-seconds", type=float, default=2, help="how long to show imgD/imgU")
     args = ap.parse_args()
 
+    setup_logging()
+    log.info("=== Starting (log file: %s) ===", LOG_FILE)
+    if mixer_error:
+        log.warning("Sound disabled (%s)", mixer_error)
+
     try:
         tags = store.load_tags()
         cfg = store.load_config()
     except store.StoreError as e:
-        sys.exit(str(e))
+        log.error("%s", e)
+        sys.exit(1)
 
     power = "reader default" if args.power is None else f"{args.power} dBm"
-    print(f"Settings: min-rssi={args.min_rssi}, power={power}, show-seconds={args.show_seconds}")
+    log.info(f"Settings: min-rssi={args.min_rssi}, power={power}, show-seconds={args.show_seconds}")
 
     q = queue.Queue()
     readers = open_readers(q, args.min_rssi, args.power)
@@ -195,14 +227,14 @@ def main():
     try:
         single = cfg.get("single_reader", "alternate")
         if len(readers) == 1:
-            print(f"Only one reader connected: single_reader = {single!r} (from config.json)")
+            log.info(f"Only one reader connected: single_reader = {single!r} (from config.json)")
         if len(readers) == 1 and single == "alternate":
             roles = {readers[0].id: TOGGLE}
         else:
             roles = registration.assign_reader_roles(readers, cfg, q)
         for r in readers:
-            print(f"{r.port}: {roles.get(r.id, '?')} reader  ({r.id})")
-        print(f"{len(tags['cubes'])} cube(s) loaded. Type new<Enter> on the exhibit window to register more.")
+            log.info(f"{r.port}: {roles.get(r.id, '?')} reader  ({r.id})")
+        log.info(f"{len(tags['cubes'])} cube(s) loaded. Type new<Enter> on the exhibit window to register more.")
         App(root, q, roles, tags, args.show_seconds)
         root.mainloop()
     finally:
@@ -210,6 +242,7 @@ def main():
             r.stop()
         for r in readers:
             r.join(timeout=1)
+        log.info("=== Exiting ===")
 
 
 if __name__ == "__main__":

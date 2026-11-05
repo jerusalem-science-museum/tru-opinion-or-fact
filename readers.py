@@ -32,6 +32,7 @@ If two opened readers still end up with the same id, `open_readers()` appends
 
 Queue items: `(reader_id, rssi, epc)`.
 """
+import logging
 import queue
 import threading
 import time
@@ -51,6 +52,12 @@ CMD_GET_SW_VERSION = build_cmd(0x03, b"\x01")
 GET_INFO_ATTEMPTS = 5      # Leonardos may reset when the port opens
 GET_INFO_RETRY_WAIT = 0.6  # seconds between attempts (~3 s total)
 POLL_INTERVAL = 0.05       # seconds between single polls
+SILENT_SECONDS = 5         # no valid reply this long -> reopen the port
+RECONNECT_WAIT = 2         # seconds between reconnect attempts
+RECONNECT_LOG_EVERY = 600  # while still failing, log a reminder this often
+STATS_EVERY = 3600         # log poll/read counters this often
+
+log = logging.getLogger(__name__)
 
 
 class ReaderError(Exception):
@@ -66,11 +73,11 @@ def find_reader_ports():
     ports = list(serial.tools.list_ports.comports())
     found = [p for p in ports if p.vid == VID_CH340 or p.vid in VID_ARDUINO]
     if not found:
-        print("No CH340 / Arduino serial ports found. Available ports:")
+        log.warning("No CH340 / Arduino serial ports found. Available ports:")
         if not ports:
-            print("  (none)")
+            log.warning("  (none)")
         for p in ports:
-            print(f"  {p.device}  vid={_fmt_id(p.vid)} pid={_fmt_id(p.pid)}  {p.description}")
+            log.warning(f"  {p.device}  vid={_fmt_id(p.vid)} pid={_fmt_id(p.pid)}  {p.description}")
     return found
 
 
@@ -103,74 +110,173 @@ def _query(ser, cmd, want_cmd):
     return None
 
 
+class ReaderSilent(Exception):
+    pass
+
+
 class Reader(threading.Thread):
+    """Polls one M100 forever. If it goes silent or the port errors, reopens it.
+
+    A healthy M100 answers every poll (a tag frame, or the 0x01/0xFF "no tag"
+    frame). If no valid frame arrives for SILENT_SECONDS, the USB link is
+    assumed stuck (e.g. ch341 "urb stopped: -32", where the port stays open
+    but delivers nothing) and the port is closed and reopened. The port is
+    looked up again by reader id, since a re-enumerated adapter may come back
+    under a different device name.
+    """
+
     def __init__(self, port_info, out_queue, min_rssi=0, power=None):
         super().__init__(daemon=True)
         self.port = port_info.device
-        self.id = reader_id_for(port_info)
+        self.base_id = reader_id_for(port_info)  # id without any "@port" suffix
+        self.id = self.base_id
         self.out_queue = out_queue
         self.min_rssi = min_rssi
+        self.power = power
+        self.ser = None
         self._stop_event = threading.Event()
-        try:
-            self.ser = serial.Serial(self.port, BAUD, timeout=0.3)
-        except (serial.SerialException, OSError) as e:
-            raise ReaderError(f"{self.port}: cannot open ({e})") from e
-
-        frame = None
-        try:
-            for attempt in range(GET_INFO_ATTEMPTS):
-                self.ser.reset_input_buffer()
-                frame = _query(self.ser, CMD_GET_INFO, 0x03)
-                if frame:
-                    break
-                time.sleep(GET_INFO_RETRY_WAIT)
-            if not frame:
-                raise ReaderError(f"{self.port}: no valid GET_INFO reply (not an M100 reader?)")
-            info = _decode_info(frame)
-            sw = _query(self.ser, CMD_GET_SW_VERSION, 0x03)
-            if sw:
-                info += f" / {_decode_info(sw)}"
-            self.hw_info = info
-            if power is not None:
-                self.ser.write(cmd_set_power(power))
-                read_frame(self.ser)
-        except ReaderError:
-            self.ser.close()
-            raise
-        except (serial.SerialException, OSError) as e:
-            self.ser.close()
-            raise ReaderError(f"{self.port}: serial error during init ({e})") from e
+        self._open(self.port)
         self.name = f"Reader-{self.port}"
+        self.polls = self.answered = self.reads = self.reconnects = 0
 
     def __repr__(self):
         return f"<Reader {self.id} on {self.port}: {self.hw_info}>"
 
-    def run(self):
-        ser = self.ser
+    def _open(self, port):
+        """Open `port`, check it answers GET_INFO, set power. Raises ReaderError."""
         try:
-            ser.reset_input_buffer()
-            while not self._stop_event.is_set():
-                # One inventory round: reply is a tag frame per tag seen, or a
-                # 0x01/0xFF error frame meaning "no tag in range".
-                ser.write(CMD_SINGLE_POLL)
-                frame = read_frame(ser)
-                while frame is not None:
-                    if checksum_ok(frame):
-                        tag = parse_tag(frame)
-                        if tag:
-                            rssi, epc = tag
-                            if rssi >= self.min_rssi:
-                                self.out_queue.put((self.id, rssi, epc))
-                    # several tags in range -> several frames; drain what's already arrived
-                    frame = read_frame(ser) if ser.in_waiting else None
-                time.sleep(POLL_INTERVAL)
+            ser = serial.Serial(port, BAUD, timeout=0.3, write_timeout=1)
         except (serial.SerialException, OSError) as e:
-            print(f"Reader {self.id} ({self.port}) stopped: {e}")
-        finally:
+            raise ReaderError(f"{port}: cannot open ({e})") from e
+
+        frame = None
+        try:
+            for attempt in range(GET_INFO_ATTEMPTS):
+                ser.reset_input_buffer()
+                frame = _query(ser, CMD_GET_INFO, 0x03)
+                if frame:
+                    break
+                time.sleep(GET_INFO_RETRY_WAIT)
+            if not frame:
+                raise ReaderError(f"{port}: no valid GET_INFO reply (not an M100 reader?)")
+            info = _decode_info(frame)
+            sw = _query(ser, CMD_GET_SW_VERSION, 0x03)
+            if sw:
+                info += f" / {_decode_info(sw)}"
+            if self.power is not None:
+                ser.write(cmd_set_power(self.power))
+                read_frame(ser)
+            ser.reset_input_buffer()
+        except ReaderError:
+            ser.close()
+            raise
+        except (serial.SerialException, OSError) as e:
+            ser.close()
+            raise ReaderError(f"{port}: serial error during init ({e})") from e
+        self.ser = ser
+        self.port = port
+        self.hw_info = info
+
+    def _close(self):
+        if self.ser is not None:
             try:
-                ser.close()
+                self.ser.close()
             except Exception:
                 pass
+            self.ser = None
+
+    def _find_port(self):
+        """Device name currently carrying this reader's id, or None."""
+        ports = [p.device for p in serial.tools.list_ports.comports()
+                 if reader_id_for(p) == self.base_id]
+        if self.port in ports:
+            return self.port
+        # with duplicate ids another reader may own the other match; only take an unambiguous one
+        return ports[0] if len(ports) == 1 else None
+
+    def _poll_once(self, last_reply):
+        """One inventory round. Returns the time of the last valid reply."""
+        ser = self.ser
+        ser.write(CMD_SINGLE_POLL)
+        self.polls += 1
+        frame = read_frame(ser)
+        got_reply = False
+        while frame is not None:
+            if checksum_ok(frame):
+                got_reply = True
+                tag = parse_tag(frame)
+                if tag:
+                    rssi, epc = tag
+                    if rssi >= self.min_rssi:
+                        self.reads += 1
+                        self.out_queue.put((self.id, rssi, epc))
+            # several tags in range -> several frames; drain what's already arrived
+            frame = read_frame(ser) if ser.in_waiting else None
+        now = time.time()
+        if got_reply:
+            self.answered += 1
+            return now
+        if now - last_reply > SILENT_SECONDS:
+            raise ReaderSilent(f"no reply for {now - last_reply:.0f} s")
+        return last_reply
+
+    def _reconnect(self):
+        """Close and reopen until it works or stop() is called. Returns True if reconnected."""
+        self._close()
+        down_since = last_log = time.time()
+        attempts = 0
+        while not self._stop_event.wait(RECONNECT_WAIT):
+            attempts += 1
+            old_port = self.port
+            port = self._find_port()
+            if port is None:
+                err = "port not found (unplugged?)"
+            else:
+                try:
+                    self._open(port)
+                except ReaderError as e:
+                    err = str(e)
+                else:
+                    self.reconnects += 1
+                    moved = f" (was {old_port})" if port != old_port else ""
+                    log.info("Reader %s reconnected on %s%s after %.0f s, %d attempt(s)",
+                             self.id, port, moved, time.time() - down_since, attempts)
+                    return True
+            if attempts == 1 or time.time() - last_log >= RECONNECT_LOG_EVERY:
+                log.warning("Reader %s: reconnect attempt %d failed: %s (retrying every %g s)",
+                            self.id, attempts, err, RECONNECT_WAIT)
+                last_log = time.time()
+        return False
+
+    def _log_stats(self):
+        log.info("Reader %s on %s: %d polls, %d answered, %d tag reads, %d reconnects so far",
+                 self.id, self.port, self.polls, self.answered, self.reads, self.reconnects)
+        self.polls = self.answered = self.reads = 0
+
+    def run(self):
+        last_reply = last_stats = time.time()
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    last_reply = self._poll_once(last_reply)
+                except ReaderSilent as e:
+                    log.warning("Reader %s (%s) went silent: %s; reconnecting", self.id, self.port, e)
+                except (serial.SerialException, OSError) as e:
+                    log.warning("Reader %s (%s) serial error: %s; reconnecting", self.id, self.port, e)
+                except Exception:
+                    log.exception("Reader %s (%s) unexpected error; reconnecting", self.id, self.port)
+                else:
+                    if time.time() - last_stats >= STATS_EVERY:
+                        self._log_stats()
+                        last_stats = time.time()
+                    self._stop_event.wait(POLL_INTERVAL)
+                    continue
+                if not self._reconnect():
+                    break
+                last_reply = time.time()
+        finally:
+            self._close()
+            log.info("Reader %s stopped", self.id)
 
     def stop(self):
         self._stop_event.set()
@@ -183,9 +289,9 @@ def open_readers(out_queue, min_rssi=0, power=None):
         try:
             r = Reader(p, out_queue, min_rssi=min_rssi, power=power)
         except ReaderError as e:
-            print(f"Skipping {e}")
+            log.warning(f"Skipping {e}")
             continue
-        print(f"Found reader {r.id} on {r.port}: {r.hw_info}")
+        log.info(f"Found reader {r.id} on {r.port}: {r.hw_info}")
         readers.append(r)
 
     counts = {}
@@ -194,7 +300,7 @@ def open_readers(out_queue, min_rssi=0, power=None):
     for r in readers:
         if counts[r.id] > 1:
             new_id = f"{r.id}@{r.port}"
-            print(f"WARNING: duplicate reader id {r.id!r}; using {new_id!r} for {r.port}")
+            log.warning(f"Duplicate reader id {r.id!r}; using {new_id!r} for {r.port}")
             r.id = new_id
     return readers
 

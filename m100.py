@@ -51,4 +51,6 @@ def parse_tag(frame):
     if frame[1] != 0x02 or frame[2] != 0x22:
         return None
     payload = frame[5:-2]
+    if len(payload) < 6:  # rssi + pc + crc + at least one epc byte; shorter = corrupt
+        return None
     return payload[0], payload[3:-2].hex().upper()  # rssi, epc (last 2 bytes are tag CRC)
