@@ -1,9 +1,10 @@
 """
 Opinion-or-fact exhibit.
 
-Shows bg.jpg full-screen. Putting a registered cube near a reader shows that
-cube's imgD (D reader, de'a/opinion) or imgU (U reader, uvda/fact) for 10 s,
-then goes back to bg.jpg. With only one reader connected, it can instead
+Shows the background image ("bg" in tags.json) full-screen. Putting a
+registered cube near a reader shows that cube's imgD (D reader, de'a/opinion)
+or imgU (U reader, uvda/fact) for show_seconds, then goes back to the
+background. With only one reader connected, it can instead
 alternate imgU, imgD, imgU, ... on each new read. If the cube has a "sound"
 (e.g. mp3), it plays each time the cube triggers.
 
@@ -11,7 +12,11 @@ On the exhibit window:  new<Enter>  registers cubes in the terminal,  Esc quits.
 
 Usage:
     pip install pyserial pillow pygame
-    python app.py [--min-rssi 200] [--power 15] [--show-seconds 10]
+    python app.py [--min-rssi 200] [--power 20] [--show-seconds 2] [--log-reads]
+
+min_rssi / power / show_seconds come from the command line, else from
+config.json; there are no built-in defaults (a missing one is an error).
+"power": null in config.json leaves the reader's own TX power.
 """
 import argparse
 import logging
@@ -132,7 +137,7 @@ class App:
         now = time.time()
         while True:
             try:
-                reader_id, _, epc = self.q.get_nowait()
+                reader_id, rssi, epc = self.q.get_nowait()
             except queue.Empty:
                 break
             role = self.roles.get(reader_id)
@@ -145,9 +150,9 @@ class App:
             # ignored until it ends; the same cube on the other reader interrupts.
             showing = self.current and self.current[0] == reader_id and self.current[1] is cube
             if role and cube and fresh and not showing:
-                self.trigger(reader_id, cube, role)
+                self.trigger(reader_id, cube, role, rssi)
 
-    def trigger(self, reader_id, cube, role):
+    def trigger(self, reader_id, cube, role, rssi=None):
         toggle = role == TOGGLE
         if toggle:
             role = self.next_toggle
@@ -158,7 +163,7 @@ class App:
                 self.root.after_cancel(self.pending)
             self.pending = self.root.after(self.show_ms, self.show_bg)
             self.current = (reader_id, cube)
-            log.info("Show %s %s (reader %s)", cube.get("name", "?"), role, reader_id)
+            log.info("Show %s %s (reader %s, rssi %s)", cube.get("name", "?"), role, reader_id, rssi)
             if cube.get("sound"):
                 self.play(store.resolve_path(cube["sound"]))
 
@@ -195,11 +200,53 @@ class App:
         self.show_window()
 
 
+def _number(v, kind):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError
+    return kind(v)
+
+
+SETTINGS = {  # config.json key -> (command-line flag, validity check, may be null)
+    "min_rssi": ("--min-rssi", lambda v: 0 <= _number(v, int) <= 255, False),
+    "power": ("--power", lambda v: _number(v, float) > 0, True),
+    "show_seconds": ("--show-seconds", lambda v: _number(v, float) > 0, False),
+}
+
+
+def resolve_settings(args, cfg):
+    """Command line > config.json > error. Returns ({key: value}, {key: source})."""
+    values, sources, problems = {}, {}, []
+    for key, (flag, ok, nullable) in SETTINGS.items():
+        cli = getattr(args, key)
+        if cli is not None:
+            value, source = cli, "command line"
+        elif key in cfg:
+            value, source = cfg[key], "config.json"
+        else:
+            problems.append(f"'{key}' is not set: add it to config.json or pass {flag}")
+            continue
+        if not (value is None and nullable):
+            try:
+                valid = ok(value)
+            except (ValueError, TypeError):
+                valid = False
+            if not valid:
+                problems.append(f"'{key}' = {value!r} (from {source}) is not valid")
+                continue
+        values[key], sources[key] = value, source
+    if problems:
+        raise ValueError("; ".join(problems))
+    return values, sources
+
+
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--min-rssi", type=int, default=200, help="only react to tags with RSSI >= this")
-    ap.add_argument("--power", type=float, help="set TX power in dBm (lower = shorter range)")
-    ap.add_argument("--show-seconds", type=float, default=2, help="how long to show imgD/imgU")
+    ap = argparse.ArgumentParser(
+        description="Opinion-or-fact exhibit. Settings not given here are read from config.json.")
+    ap.add_argument("--min-rssi", type=int, help="only react to tags with RSSI >= this (0-255, higher = closer)")
+    ap.add_argument("--power", type=float, help="reader TX power in dBm (lower = shorter range)")
+    ap.add_argument("--show-seconds", type=float, help="how long to show imgD/imgU")
+    ap.add_argument("--log-reads", action="store_true",
+                    help="log every tag read with its RSSI (kept or dropped), for tuning min_rssi / power")
     args = ap.parse_args()
 
     setup_logging()
@@ -214,11 +261,20 @@ def main():
         log.error("%s", e)
         sys.exit(1)
 
-    power = "reader default" if args.power is None else f"{args.power} dBm"
-    log.info(f"Settings: min-rssi={args.min_rssi}, power={power}, show-seconds={args.show_seconds}")
+    try:
+        settings, sources = resolve_settings(args, cfg)
+    except ValueError as e:
+        log.error("Settings: %s", e)
+        sys.exit(1)
+    min_rssi, power, show_seconds = settings["min_rssi"], settings["power"], settings["show_seconds"]
+    power_text = "reader default" if power is None else f"{power} dBm"
+    log.info(f"Settings: min_rssi={min_rssi} ({sources['min_rssi']}), "
+             f"power={power_text} ({sources['power']}), "
+             f"show_seconds={show_seconds} ({sources['show_seconds']})"
+             + (", logging every read" if args.log_reads else ""))
 
     q = queue.Queue()
-    readers = open_readers(q, args.min_rssi, args.power)
+    readers = open_readers(q, min_rssi, power, log_reads=args.log_reads)
     for r in readers:
         r.start()
 
@@ -235,7 +291,7 @@ def main():
         for r in readers:
             log.info(f"{r.port}: {roles.get(r.id, '?')} reader  ({r.id})")
         log.info(f"{len(tags['cubes'])} cube(s) loaded. Type new<Enter> on the exhibit window to register more.")
-        App(root, q, roles, tags, args.show_seconds)
+        App(root, q, roles, tags, show_seconds)
         root.mainloop()
     finally:
         for r in readers:

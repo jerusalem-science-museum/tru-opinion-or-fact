@@ -9,8 +9,10 @@ tags.json -- one entry per physical cube; all its EPCs share one image pair:
   (DATA_DIR) with forward slashes when they are inside it; anything else is
   stored absolute.
 
-config.json -- {"readers": {"<reader_id>": "D" | "U"}, optional "min_rssi",
-"power", "show_seconds" run defaults (CLI flags override), optional
+config.json -- {"readers": {"<reader_id>": "D" | "U"}, "min_rssi", "power"
+(dBm, or null = the reader's own setting), "show_seconds" (each required
+unless given on the command line, which overrides it; app.py stops otherwise),
+optional
 "single_reader": "alternate" (default; a lone reader alternates U, D, U, ...)
 or "assign" (a lone reader gets a D/U role like any other)}; other top-level keys
   are kept as-is.

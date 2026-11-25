@@ -2,5 +2,8 @@
   "readers": {
     "loc:1-2": "D"
   },
-  "single_reader": "alternate"
+  "single_reader": "alternate",
+  "min_rssi": 200,
+  "power": null,
+  "show_seconds": 2
 }

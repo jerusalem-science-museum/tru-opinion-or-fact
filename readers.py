@@ -56,6 +56,7 @@ SILENT_SECONDS = 5         # no valid reply this long -> reopen the port
 RECONNECT_WAIT = 2         # seconds between reconnect attempts
 RECONNECT_LOG_EVERY = 600  # while still failing, log a reminder this often
 STATS_EVERY = 3600         # log poll/read counters this often
+LOG_READS_EVERY = 1        # with log_reads: log each tag at most this often (seconds)
 
 log = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ class Reader(threading.Thread):
     under a different device name.
     """
 
-    def __init__(self, port_info, out_queue, min_rssi=0, power=None):
+    def __init__(self, port_info, out_queue, min_rssi=0, power=None, log_reads=False):
         super().__init__(daemon=True)
         self.port = port_info.device
         self.base_id = reader_id_for(port_info)  # id without any "@port" suffix
@@ -133,6 +134,8 @@ class Reader(threading.Thread):
         self.out_queue = out_queue
         self.min_rssi = min_rssi
         self.power = power
+        self.log_reads = log_reads
+        self._read_logged = {}  # epc -> time last logged (log_reads only)
         self.ser = None
         self._stop_event = threading.Event()
         self._open(self.port)
@@ -207,9 +210,12 @@ class Reader(threading.Thread):
                 tag = parse_tag(frame)
                 if tag:
                     rssi, epc = tag
-                    if rssi >= self.min_rssi:
+                    kept = rssi >= self.min_rssi
+                    if kept:
                         self.reads += 1
                         self.out_queue.put((self.id, rssi, epc))
+                    if self.log_reads:
+                        self._log_read(epc, rssi, kept)
             # several tags in range -> several frames; drain what's already arrived
             frame = read_frame(ser) if ser.in_waiting else None
         now = time.time()
@@ -219,6 +225,13 @@ class Reader(threading.Thread):
         if now - last_reply > SILENT_SECONDS:
             raise ReaderSilent(f"no reply for {now - last_reply:.0f} s")
         return last_reply
+
+    def _log_read(self, epc, rssi, kept):
+        now = time.time()
+        if now - self._read_logged.get(epc, 0) >= LOG_READS_EVERY:
+            self._read_logged[epc] = now
+            log.info("Read %s %s rssi=%d %s (min_rssi %d)", self.id, epc, rssi,
+                     "kept" if kept else "DROPPED", self.min_rssi)
 
     def _reconnect(self):
         """Close and reopen until it works or stop() is called. Returns True if reconnected."""
@@ -282,12 +295,12 @@ class Reader(threading.Thread):
         self._stop_event.set()
 
 
-def open_readers(out_queue, min_rssi=0, power=None):
+def open_readers(out_queue, min_rssi=0, power=None, log_reads=False):
     """Open every detected reader port (threads NOT started). Skips failures."""
     readers = []
     for p in find_reader_ports():
         try:
-            r = Reader(p, out_queue, min_rssi=min_rssi, power=power)
+            r = Reader(p, out_queue, min_rssi=min_rssi, power=power, log_reads=log_reads)
         except ReaderError as e:
             log.warning(f"Skipping {e}")
             continue
